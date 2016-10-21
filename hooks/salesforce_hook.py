@@ -71,7 +71,8 @@ class SalesforceHook(BaseHook):
         logging.info("Querying for all objects")
         query = self.sf.query_all(query)
 
-        logging.info("Converting ordered dict to dict")
+        logging.info("Received results: Total size: {0}; Done: {1}".format(query['totalSize'], query['done']))
+
         query = json.loads(json.dumps(query))
         return query
 
@@ -81,7 +82,35 @@ class SalesforceHook(BaseHook):
         """
         return json.loads(json.dumps(self.sf.__getattr__(obj).describe()))
 
-    def convertSalesforceSchemaToBQ(self, obj, schema_filename=None, keys_to_use=None):
+    def getAvailableFields(self, obj):
+        """
+        Get a list of all available fields for an object.
+
+        This only returns the names of the fields.
+        """
+        desc = self.describeObject(obj)
+
+        return [f['name'] for f in desc['fields']]
+
+    def _buildFieldList(self, fields):
+        # join all of the fields in a comma seperated list
+        return ",".join(fields)
+
+    def getObjectFromSalesforce(self, obj, fields):
+        """
+        Get all instances of the `object` from Salesforce.  For each model, only get the fields specified in fields.
+
+        All we really do underneath the hood is run
+            SELECT <fields> FROM <obj>
+        """
+        field_string = self._buildFieldList(fields)
+
+        query = "SELECT {0} FROM {1}".format(field_string, obj)
+
+        logging.info("Making query to salesforce: {0}".format(query))
+        return self.makeQuery(query)
+
+    def convertSalesforceSchemaToBQ(self, obj, fields, schema_filename=None):
         """
         Given an object develop a schema for it.
         """
@@ -93,9 +122,10 @@ class SalesforceHook(BaseHook):
             "type": self._typeMap(d['type'])
         } for d in desc['fields']]
 
-        # we can shrink the resulting schema down
-        if keys_to_use:
-            schema = [s for s in schema if s['name'].lower() in keys_to_use]
+        # if the length of the fields array is less than the length of the object's complete schema,
+        # then there are items that we need to remove
+        if len(fields) < len(schema):
+            schema = [s for s in schema if s['name'] in fields]
 
         # if the filename is specified, dum p
         if schema_filename:
@@ -111,10 +141,9 @@ class SalesforceHook(BaseHook):
 
         If we don't have a mapping for the type, assume it's a string since almost everything goes to string.
         """
-        cls.SF_TO_BQ_TYPE_MAP.get(t, "STRING")
-     
+        return cls.SF_TO_BQ_TYPE_MAP.get(t, "STRING")
 
-    def writeQueryToFile(self, query_results, filename, fmt="csv"):
+    def writeObjectToFile(self, query_results, filename, fmt="csv"):
         """
         Write query results to file.
 
@@ -126,7 +155,9 @@ class SalesforceHook(BaseHook):
         if fmt not in ['csv', 'json']:
             raise ValueError("Format value is not recognized: {0}".format(fmt))
 
-        df = pd.DataFrame.from_records(query_results)            
+        df = pd.DataFrame.from_records(query_results)   
+
+        # all of the results come with 
         if 'attributes' in df.columns:
             del(df['attributes'])
 

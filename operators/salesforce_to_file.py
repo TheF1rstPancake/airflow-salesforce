@@ -19,6 +19,7 @@ class SalesforceToFileOperator(BaseOperator):
         fields,
         security_token = None,
         output = None,
+        output_schema = None,
         query = None,
         *args,
         **kwargs):
@@ -32,13 +33,13 @@ class SalesforceToFileOperator(BaseOperator):
         self.password = password
         self.security_token = security_token
         self.output = output
+        self.output_schema = output_schema
         self.object = obj
         self.fields = fields
         self.query = query
 
     def execute(self, context):
-        logging.info("Making query: {0}".format(self.query))
-
+        logging.info("Prepping to gather data from Salesforce")
         hook = SalesforceHook(
             self.username, 
             self.password, 
@@ -46,19 +47,20 @@ class SalesforceToFileOperator(BaseOperator):
             output = self.output
         )
 
-        query = hook.makeQuery(self.query)
+        # get object from salesforce
+        logging.info("Making request for {0} fields from {1}".format(len(self.fields), self.object))
+        query = hook.getObjectFromSalesforce(self.object, self.fields)
 
+        # if output is set, then output to file
         if self.output:
             # output the records from the query to a file
+            # the list of records is stored under the "records" key
             logging.info("Writing query results to file: {0}".format(self.output))
-            cols = hook.writeQueryToFile(query['records'], self.output)
-            cols = list(cols.columns)
+            hook.writeObjectToFile(query['records'], filename = self.output, fmt="csv")
 
-            # generate a schema file
-            file_parts = os.path.splitext(self.output)
-            schema_file = "{0}_schema.json".format(file_parts[0])
-
-            hook.convertSalesforceSchemaToBQ(self.object, schema_file, cols)
+            if self.output_schema:
+                logging.info("Writing schema to file: {0}".format(self.output_schema))
+                hook.convertSalesforceSchemaToBQ(self.object, self.fields, self.output_schema)
 
         logging.info("Query finished!")
 
