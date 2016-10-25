@@ -36,20 +36,24 @@ class SalesforceHook(BaseHook):
 
     def __init__(
             self,
-            username,
-            password,
-            security_token = None,
+            conn_id,
             *args,
             **kwargs
         ):
         """
         Create new connection to Salesforce
+
+        :param conn_id:     the name of the connection that has the parameters we need to connect to Salesforce.  The conenction shoud be type `http` and include a user's security token in the `Extras` field.
+
+        For the HTTP connection type, you can include a JSON structure in the `Extras` field.  We need a user's security token to connect to Salesforce.  So we define it in the `Extras` field as: `{"security_token":"YOUR_SECRUITY_TOKEN"}`
         """
-        self.username = username
-        self.password = password
-        self.security_token = security_token
-
-
+        self.conn_id = conn_id
+        self._args = args
+        self._kwargs = kwargs
+       
+        # get the connection parameters
+        self.connection = self.get_connection(conn_id)
+        self.extras = self.connection.extra_dejson
 
     def signIn(self):
         """
@@ -57,7 +61,9 @@ class SalesforceHook(BaseHook):
         """
         if hasattr(self, 'sf'):
             return self.sf
-        sf = Salesforce(username=self.username, password=self.password, security_token=self.security_token)
+        
+        # connect to Salesforce
+        sf = Salesforce(username=self.connection.login, password=self.connection.password, security_token=self.extras['security_token'], instance_url=self.connection.host)
         self.sf = sf
         return sf
 

@@ -13,11 +13,9 @@ class SalesforceToFileOperator(BaseOperator):
     @apply_defaults
     def __init__ (
         self,
-        username,
-        password,
+        conn_id,
         obj,
         fields,
-        security_token = None,
         output = None,
         output_schema = None,
         query = None,
@@ -29,9 +27,7 @@ class SalesforceToFileOperator(BaseOperator):
 
         super(SalesforceToFileOperator, self).__init__(*args, **kwargs)
 
-        self.username = username
-        self.password = password
-        self.security_token = security_token
+        self.conn_id = conn_id
         self.output = output
         self.output_schema = output_schema
         self.object = obj
@@ -41,9 +37,7 @@ class SalesforceToFileOperator(BaseOperator):
     def execute(self, context):
         logging.info("Prepping to gather data from Salesforce")
         hook = SalesforceHook(
-            self.username, 
-            self.password, 
-            security_token=self.security_token, 
+            conn_id = self.conn_id,
             output = self.output
         )
 
