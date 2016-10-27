@@ -15,10 +15,11 @@ class SalesforceToFileOperator(BaseOperator):
         self,
         conn_id,
         obj,
-        fields,
+        fields = None,
         output = None,
         output_schema = None,
         query = None,
+        fmt = "csv",
         *args,
         **kwargs):
         """
@@ -33,6 +34,7 @@ class SalesforceToFileOperator(BaseOperator):
         self.object = obj
         self.fields = fields
         self.query = query
+        self.fmt = fmt.lower()
 
     def execute(self, context):
         logging.info("Prepping to gather data from Salesforce")
@@ -41,8 +43,15 @@ class SalesforceToFileOperator(BaseOperator):
             output = self.output
         )
 
+        # attempt to login to Salesforce
+        hook.signIn()
+
         # get object from salesforce
+        # if fields were not defined, then we assume that the user wants to get all of them
+        if not self.fields:
+            self.fields = hook.getAvailableFields(self.object)
         logging.info("Making request for {0} fields from {1}".format(len(self.fields), self.object))
+
         query = hook.getObjectFromSalesforce(self.object, self.fields)
 
         # if output is set, then output to file
@@ -50,11 +59,10 @@ class SalesforceToFileOperator(BaseOperator):
             # output the records from the query to a file
             # the list of records is stored under the "records" key
             logging.info("Writing query results to file: {0}".format(self.output))
-            hook.writeObjectToFile(query['records'], filename = self.output, fmt="csv")
+            hook.writeObjectToFile(query['records'], filename = self.output, fmt=self.fmt)
 
             if self.output_schema:
                 logging.info("Writing schema to file: {0}".format(self.output_schema))
                 hook.convertSalesforceSchemaToBQ(self.object, self.fields, self.output_schema)
 
         logging.info("Query finished!")
-
