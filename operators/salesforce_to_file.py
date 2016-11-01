@@ -17,9 +17,11 @@ class SalesforceToFileOperator(BaseOperator):
         obj,
         fields = None,
         output = None,
-        output_schema = None,
+        output_schemafile = None,
+        output_schema = "BQ",
         query = None,
         fmt = "csv",
+        coerce_to_timestamp = False,
         *args,
         **kwargs):
         """
@@ -30,11 +32,13 @@ class SalesforceToFileOperator(BaseOperator):
 
         self.conn_id = conn_id
         self.output = output
-        self.output_schema = output_schema
+        self.output_schemafile = output_schemafile
+        self.output_schematype = output_schema
         self.object = obj
         self.fields = fields
         self.query = query
         self.fmt = fmt.lower()
+        self.coerce_to_timestamp = coerce_to_timestamp
 
     def execute(self, context):
         logging.info("Prepping to gather data from Salesforce")
@@ -59,10 +63,16 @@ class SalesforceToFileOperator(BaseOperator):
             # output the records from the query to a file
             # the list of records is stored under the "records" key
             logging.info("Writing query results to file: {0}".format(self.output))
-            hook.writeObjectToFile(query['records'], filename = self.output, fmt=self.fmt)
+            hook.writeObjectToFile(query['records'],
+                filename =              self.output,
+                fmt =                   self.fmt,
+                coerce_to_timestamp =   self.coerce_to_timestamp)
 
-            if self.output_schema:
-                logging.info("Writing schema to file: {0}".format(self.output_schema))
-                hook.convertSalesforceSchemaToBQ(self.object, self.fields, self.output_schema)
+            if self.output_schemafile:
+                logging.info("Writing schema to file: {0}".format(self.output_schemafile))
+                hook.convertSalesforceSchemaToAnotherSchema(self.object, self.fields,
+                    other_schema =          self.output_schematype,
+                    schema_filename =       self.output_schemafile,
+                    coerce_to_timestamp =   self.coerce_to_timestamp)
 
         logging.info("Query finished!")
