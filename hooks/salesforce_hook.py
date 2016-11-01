@@ -5,6 +5,7 @@ import logging
 import json
 
 import pandas as pd
+import time
 
 import os
 
@@ -20,7 +21,9 @@ class SalesforceHook(BaseHook):
 
         :param conn_id:     the name of the connection that has the parameters we need to connect to Salesforce.  The conenction shoud be type `http` and include a user's security token in the `Extras` field.
 
-        For the HTTP connection type, you can include a JSON structure in the `Extras` field.  We need a user's security token to connect to Salesforce.  So we define it in the `Extras` field as: `{"security_token":"YOUR_SECRUITY_TOKEN"}`
+        .. note::
+                    For the HTTP connection type, you can include a JSON structure in the `Extras` field.  We need a user's security token to connect to Salesforce.  So we define it in the `Extras` field as: `{"security_token":"YOUR_SECRUITY_TOKEN"}`
+
         """
         self.conn_id = conn_id
         self._args = args
@@ -34,7 +37,6 @@ class SalesforceHook(BaseHook):
         self.SF_TO_SCHEMA_MAP = {
             "BQ": self.convertSalesforceSchemaToBQ
         }
-
 
     def signIn(self):
         """
@@ -51,6 +53,8 @@ class SalesforceHook(BaseHook):
     def makeQuery(self, query):
         """
         Make a query to Salesforce.  Returns result in dictionary
+
+        :param query:    The query to make to Salesforce
         """
         if not hasattr(self, 'sf'):
             self.signIn()
@@ -65,7 +69,11 @@ class SalesforceHook(BaseHook):
 
     def describeObject(self, obj):
         """
-        Get the description of an object from Salesforce
+        Get the description of an object from Salesforce.
+
+        This description is the object's schema and some extra metadata that Salesforce stores for each object
+
+        :param obj:     Name of the Salesforce object that we are getting a description of.
         """
         if not hasattr(self, 'sf'):
             self.signIn()
@@ -102,7 +110,7 @@ class SalesforceHook(BaseHook):
         logging.info("Making query to salesforce: {0}".format(query if len(query)<30 else " ... ".join([query[:15], query[-15:]])))
         return self.makeQuery(query)
 
-    def convertSalesforceSchemaToAnotherSchema(self, obj, fields, other_schema, schema_filename, coerce_to_timestamp=False):
+    def convertSalesforceSchemaToAnotherSchema(self, obj, fields, other_schema, schema_filename, coerce_to_timestamp=False, record_time_added=False):
         """
         Convert the Salesforce schema for the object into a valid schema for a different database.
 
@@ -111,6 +119,7 @@ class SalesforceHook(BaseHook):
         :param other_schema:    the schema type that we are converting the Salesforce schema into.  The value can be *None* if you do not want a new schema to be generated
         :param schema_filename: the name of the file where the schema is written to in JSON format.  The value can be *None* if you do not want a file to be written
         :param coerce_to_timestamp:  True if all datetime values were coerced into UNIX timestamps. This will force the schema conversion to consider all datetime fields to actually be numeric types instead of string types. *Default: False*.
+        :param record_time_added:   True if you used this boolean when getting data from Salesforce.  It will add a Unix timestamp (UTC) that marks the when the data was fetched from Salesforce. *Default: False*.
         """
         # call the appropriate schema conversion function
         # if no function exists for the provided type, this will cause an error
@@ -131,7 +140,7 @@ class SalesforceHook(BaseHook):
 
         # convert to another schema
         # raise a ValueError if the schema does not exist.
-        schema = self.SF_TO_SCHEMA_MAP.get(other_schema, self.unknownSchema)(desc, coerce_to_timestamp=coerce_to_timestamp)
+        schema = self.SF_TO_SCHEMA_MAP.get(other_schema, self.unknownSchema)(desc, coerce_to_timestamp=coerce_to_timestamp, record_time_added=record_time_added)
 
         # if the filename is specified, dump
         if schema_filename:
@@ -144,7 +153,7 @@ class SalesforceHook(BaseHook):
         """
         raise ValueError("Schema not recognized.  Cannot convert Salesforce schema")
 
-    def convertSalesforceSchemaToBQ(self, sf_schema, coerce_to_timestamp=False):
+    def convertSalesforceSchemaToBQ(self, sf_schema, coerce_to_timestamp=False, record_time_added=False):
         """
         Given a Salesforce schema, convert it to a valid BigQuery schema
 
@@ -156,12 +165,16 @@ class SalesforceHook(BaseHook):
         .. warning::
             If there is a salesforce type that is not a part of this map, then we assume that the BigQuery equivalent is a STRING.
             This is because most types seem to map to STRING, and because all possible number types are already represented.
+
+        :param sf_schema:   the Salesfroce schema definining the object.
+        :param coerce_to_timestamp: True if you want all datetime and date values to be converted into Unix timestamps (UTC).
+        :param record_time_added:   True if you want to add a field that will contain a Unix timestamp (UTC) representing when the data was fetched from Salesforce.
         """
         #https://developer.salesforce.com/docs/atlas.en-us.api.meta/api/field_types.htm
         #http://www.chiragmehta.info/chirag/2011/05/16/field-datatype-mapping-between-oraclesql-server-and-salesforce/
         SF_TO_BQ_TYPE_MAP = {
             "boolean":      "BOOLEAN",
-            "date":         "STRING",
+            "date":         "FLOAT" if coerce_to_timestamp else "STRING",
             "datetime":     "FLOAT" if coerce_to_timestamp else "STRING",
             "currency":     "FLOAT",
             "double":       "FLOAT",
@@ -184,11 +197,15 @@ class SalesforceHook(BaseHook):
 
         # convert the schema
         # if there is some Salesforce object that wasn't described here, then assume that it's a STRING
+        # we also output all schema names in lower case
         schema = [{
             "mode": "NULLABLE" if d['nillable'] else "REQUIRED",
-            "name": d['name'],
+            "name": d['name'].lower(),
             "type": SF_TO_BQ_TYPE_MAP.get(d['type'], "STRING")
         } for d in sf_schema['fields']]
+
+        if record_time_added:
+            schema.append({"name":"time_fetched_from_salesforce", "mode":"NULLABLE", "type":"FLOAT"})
 
         # the schema objects have to be listed in the same order as they appear in the CSV file
         # the dataframe has it's columns sorted alphabetically, so we sort the schema the same way
@@ -227,7 +244,7 @@ class SalesforceHook(BaseHook):
         # return a new series that maintains the same index as the original
         return pd.Series(converted, index= col.index)
 
-    def writeObjectToFile(self, query_results, filename, fmt="csv", coerce_to_timestamp=False):
+    def writeObjectToFile(self, query_results, filename, fmt="csv", coerce_to_timestamp=False, record_time_added=False):
         """
         Write query results to file.
 
@@ -251,6 +268,7 @@ class SalesforceHook(BaseHook):
         :param filename:            the name of the file where the data should be dumped to
         :param fmt:                 the format you want the output in.  Defaults to *csv*.
         :param coerce_to_timestamp: True if you want all datetime fields to be converted into Unix timestamps.  False if you want them to be left in the same format as they were in Salesforce. *Defaults to False*
+        :param record_time_added:   *(optional)* True if you want to add a Unix timestamp field to the resulting data that marks when the data was fetched from Salesforce. *Default: False*.
         """
         fmt = fmt.lower()
         if fmt not in ['csv', 'json', 'ndjson']:
@@ -268,6 +286,10 @@ class SalesforceHook(BaseHook):
         if coerce_to_timestamp:
             possible_timestamp_cols = df.columns[df.dtypes == "object"]
             df[possible_timestamp_cols] = df[possible_timestamp_cols].apply(lambda x: self._toTimestamp(x))
+
+        if record_time_added:
+            fetched_time = time.time()
+            df["time_fetched_from_salesforce"] = fetched_time
 
         # write the CSV or JSON file depending on the option
         # NOTE:
