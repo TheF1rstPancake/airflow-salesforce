@@ -240,6 +240,8 @@ class SalesforceHook(BaseHook):
                 converted.append(i.timestamp())
             except ValueError as e:
                 converted.append(pd.np.NaN)
+            except AttributeError as e:
+                converted.append(pd.np.NaN)
 
         # return a new series that maintains the same index as the original
         return pd.Series(converted, index= col.index)

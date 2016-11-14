@@ -4,7 +4,7 @@ import logging
 import json
 import os
 
-from salesforce_to_file.hooks.salesforce_hook import SalesforceHook
+from airflow_salesforce.hooks.salesforce_hook import SalesforceHook
 
 class SalesforceToFileOperator(BaseOperator):
     """
