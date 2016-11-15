@@ -26,6 +26,7 @@ Example
 Here is an example of using the hook and operator to move data from Salesforce into BigQuery:
 
 .. code:: python
+
   from airflow import DAG
   from datetime import datetime, timedelta
 
