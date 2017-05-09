@@ -5,6 +5,7 @@ from airflow.utils.decorators import apply_defaults
 import logging
 import json
 
+
 class SalesforceToFileOperator(BaseOperator):
     """
     Make a query against Salesforce and

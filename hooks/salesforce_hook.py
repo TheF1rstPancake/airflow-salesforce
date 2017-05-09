@@ -17,6 +17,9 @@ This module contains a Salesforce Hook
 which allows you to connect to your Salesforce instance,
 retrieve data from it, and write that data to a file
 for other uses.
+
+NOTE:   this hook also relies on the simple_salesforce package:
+        https://github.com/simple-salesforce/simple-salesforce
 """
 from simple_salesforce import Salesforce
 from airflow.hooks.base_hook import BaseHook
@@ -26,8 +29,6 @@ import json
 
 import pandas as pd
 import time
-
-import os
 
 
 class SalesforceHook(BaseHook):
@@ -63,12 +64,7 @@ class SalesforceHook(BaseHook):
         self.connection = self.get_connection(conn_id)
         self.extras = self.connection.extra_dejson
 
-        # define a map of strings to different schema converting functions
-        self.SF_TO_SCHEMA_MAP = {
-            "BQ": self.convertSalesforceSchemaToBQ
-        }
-
-    def signIn(self):
+    def sign_in(self):
         """
         Sign into Salesforce.
 
@@ -87,25 +83,27 @@ class SalesforceHook(BaseHook):
         self.sf = sf
         return sf
 
-    def makeQuery(self, query):
+    def make_query(self, query):
         """
         Make a query to Salesforce.  Returns result in dictionary
 
         :param query:    The query to make to Salesforce
         """
-        if not hasattr(self, 'sf'):
-            self.signIn()
+        self.sign_in()
 
         logging.info("Querying for all objects")
         query = self.sf.query_all(query)
 
-        logging.info("Received results: Total size: \
-            {0}; Done: {1}".format(query['totalSize'], query['done']))
+        logging.info(
+            "Received results: Total size: {0}; Done: {1}".format(
+                query['totalSize'], query['done']
+            )
+        )
 
         query = json.loads(json.dumps(query))
         return query
 
-    def describeObject(self, obj):
+    def describe_object(self, obj):
         """
         Get the description of an object from Salesforce.
 
@@ -115,29 +113,27 @@ class SalesforceHook(BaseHook):
         :param obj:     Name of the Salesforce object
                         that we are getting a description of.
         """
-        if not hasattr(self, 'sf'):
-            self.signIn()
+        self.sign_in()
 
         return json.loads(json.dumps(self.sf.__getattr__(obj).describe()))
 
-    def getAvailableFields(self, obj):
+    def get_available_fields(self, obj):
         """
         Get a list of all available fields for an object.
 
         This only returns the names of the fields.
         """
-        if not hasattr(self, 'sf'):
-            self.signIn()
+        self.sign_in()
 
-        desc = self.describeObject(obj)
+        desc = self.describe_object(obj)
 
         return [f['name'] for f in desc['fields']]
 
-    def _buildFieldList(self, fields):
+    def _build_field_list(self, fields):
         # join all of the fields in a comma seperated list
         return ",".join(fields)
 
-    def getObjectFromSalesforce(self, obj, fields):
+    def get_object_from_salesforce(self, obj, fields):
         """
         Get all instances of the `object` from Salesforce.
         For each model, only get the fields specified in fields.
@@ -145,190 +141,19 @@ class SalesforceHook(BaseHook):
         All we really do underneath the hood is run:
             SELECT <fields> FROM <obj>;
         """
-        field_string = self._buildFieldList(fields)
+        field_string = self._build_field_list(fields)
 
         query = "SELECT {0} FROM {1}".format(field_string, obj)
-        logging.info("Making query to salesforce: \
-            {0}".format(query if len(query) < 30 else " ... ".join(
-                [query[:15], query[-15:]])
+        logging.info(
+            "Making query to salesforce: {0}".format(
+                query if len(query) < 30
+                else " ... ".join([query[:15], query[-15:]])
             )
         )
-        return self.makeQuery(query)
-
-    def convertSalesforceSchemaToAnotherSchema(
-        self,
-        obj,
-        fields,
-        other_schema,
-        schema_filename,
-        coerce_to_timestamp=False,
-        record_time_added=False
-    ):
-        """
-        Convert the Salesforce schema for the
-        object into a valid schema for a different database.
-
-        :param obj:                 the name of the object we are
-                                    building the schema for
-        :param fields:              the fields to include in the schema
-        :param other_schema:        the schema type that we are converting
-                                    the Salesforce schema into.
-                                    The value can be *None* if you do not
-                                    want a new schema to be generated
-        :param schema_filename:     the name of the file where the schema is
-                                    written to in JSON format.
-                                    The value can be *None* if you do not want
-                                    a file to be written
-        :param coerce_to_timestamp: True if all datetime values were coerced
-                                    into UNIX timestamps.
-                                    This will force the schema conversion to
-                                    consider all datetime fields to actually
-                                    be numeric types instead of string types.
-                                    *Default: False*.
-        :param record_time_added:   True if you used this boolean when
-                                    getting data from Salesforce.
-                                    It will add a Unix timestamp (UTC) that
-                                    marks the when the data was fetched
-                                    from Salesforce. *Default: False*.
-        """
-        # call the appropriate schema conversion function
-        # if no function exists for the provided type, this will cause an error
-        if other_schema is None:
-            logging.warning(
-                "Output schema type is None.\
-                Will not convert Salesforce schema into another format.\
-                Returning None"
-            )
-            return None
-
-        # get the existing schema
-        # this will be a dictionary where all of the information about
-        # each field is contained in the "fields" key
-        # but there is some other metadata at the top level that
-        # might be useful for other schema conversions
-        desc = self.describeObject(obj)
-
-        # if the length of the fields array is less than the length of the
-        # object's complete schema,
-        # then there are items that we need to remove.
-        # we filter them out here
-        if len(fields) < len(desc['fields']):
-            desc['fields'] = [s for s in desc['fields'] if s['name'] in fields]
-
-        # convert to another schema
-        # raise a ValueError if the schema does not exist.
-        schema = self.SF_TO_SCHEMA_MAP.get(
-                        other_schema,
-                        self.unknownSchema
-                    )(
-                        desc,
-                        coerce_to_timestamp=coerce_to_timestamp,
-                        record_time_added=record_time_added
-                    )
-
-        # if the filename is specified, dump to a file
-        if schema_filename:
-            with open(schema_filename, "w") as f:
-                json.dump(schema, f)
-
-    def unknownSchema(self, *args, **kwargs):
-        """
-        Raise an erorr in the event that we are trying to
-        convert to a schema type that we do not recognize
-        """
-        raise ValueError("Schema not recognized.\
-          Cannot convert Salesforce schema")
-
-    def convertSalesforceSchemaToBQ(
-        self,
-        sf_schema,
-        coerce_to_timestamp=False,
-        record_time_added=False
-    ):
-        """
-        Given a Salesforce schema, convert it to a valid BigQuery schema
-
-        This function defines a dictionary that maps
-        the known Salesforce types to BigQuery datatypes.
-
-        .. note::
-            This map is not the only valid mapping.
-            For example, we could do `dateitme:DATETIME`.
-            However, the BigQuery DATETIME is very particular
-            about the format of it's data,
-            so we do FLOAT and then coerce all
-            datetime values into UNIX timestamps
-
-        .. warning::
-            If there is a salesforce type that is not a part of this map,
-            then we assume that the BigQuery equivalent is a STRING.
-            This is because most types seem to map to STRING,
-            and because all possible number types are already represented.
-
-        :param sf_schema:   the Salesfroce schema definining the object.
-        :param coerce_to_timestamp: True if you want all datetime and
-                                    date values to be converted
-                                    into Unix timestamps (UTC).
-        :param record_time_added:   True if you want to add a field that will
-                                    contain a Unix timestamp (UTC) representing
-                                    when the data was fetched from Salesforce.
-        """
-        # This Salesforce to BQ type mapping was
-        # compiled from the following sources:
-        # https://developer.salesforce.com/docs/atlas.en-us.api.meta/api/field_types.htm
-        # http://www.chiragmehta.info/chirag/2011/05/16/field-datatype-mapping-between-oraclesql-server-and-salesforce/
-        SF_TO_BQ_TYPE_MAP = {
-            "boolean":          "BOOLEAN",
-            "date":             "FLOAT" if coerce_to_timestamp else "STRING",
-            "datetime":         "FLOAT" if coerce_to_timestamp else "STRING",
-            "currency":         "FLOAT",
-            "double":           "FLOAT",
-            "int":              "FLOAT",
-            "picklist":         "STRING",
-            "id":               "STRING",
-            "reference":        "STRING",
-            "textarea":         "STRING",
-            "email":            "STRING",
-            "phone":            "STRING",
-            "url":              "STRING",
-            "multipicklist":    "STRING",
-            "anyType":          "STRING",
-            "percent":          "STRING",
-            "combobox":         "STRING",
-            "base64":           "STRING",
-            "time":             "TIME",
-            "string":           "STRING"
-        }
-
-        # convert the schema
-        # if there is some Salesforce object that wasn't described here,
-        # then assume that it's a STRING
-        # we also output all schema names in lower case
-        schema = [{
-            "mode": "NULLABLE" if d['nillable'] else "REQUIRED",
-            "name": d['name'].lower(),
-            "type": SF_TO_BQ_TYPE_MAP.get(d['type'], "STRING")
-        } for d in sf_schema['fields']]
-
-        if record_time_added:
-            schema.append(
-                {
-                    "name": "time_fetched_from_salesforce",
-                    "mode": "NULLABLE",
-                    "type": "FLOAT"
-                }
-            )
-
-        # the schema objects have to be listed
-        # in the same order as they appear in the CSV file
-        # the dataframe has it's columns sorted alphabetically,
-        # so we sort the schema the same way
-        schema = sorted(schema, key=lambda x: x['name'])
-
-        return schema
+        return self.make_query(query)
 
     @classmethod
-    def _toTimestamp(cls, col):
+    def _to_timestamp(cls, col):
         """
         Convert a column of a dataframe to UNIX timestamps if applicable
 
@@ -345,7 +170,10 @@ class SalesforceHook(BaseHook):
         # just return the original column untouched
         try:
             col = pd.to_datetime(col)
-        except ValueError as e:
+        except ValueError:
+            logging.warning(
+                "Could not convert field to timestamps: {0}".format(col.name)
+            )
             return col
 
         # now convert the newly created datetimes into timestamps
@@ -356,15 +184,15 @@ class SalesforceHook(BaseHook):
         for i in col:
             try:
                 converted.append(i.timestamp())
-            except ValueError as e:
+            except ValueError:
                 converted.append(pd.np.NaN)
-            except AttributeError as e:
+            except AttributeError:
                 converted.append(pd.np.NaN)
 
         # return a new series that maintains the same index as the original
         return pd.Series(converted, index=col.index)
 
-    def writeObjectToFile(
+    def write_object_to_file(
         self,
         query_results,
         filename,
@@ -407,6 +235,8 @@ class SalesforceHook(BaseHook):
                                     converted into Unix timestamps.
                                     False if you want them to be left in the
                                     same format as they were in Salesforce.
+                                    Leaving the value as False will result
+                                    in datetimes being strings.
                                     *Defaults to False*
         :param record_time_added:   *(optional)* True if you want to add a
                                     Unix timestamp field to the resulting data
@@ -421,17 +251,36 @@ class SalesforceHook(BaseHook):
         # this line right here will convert all integers to floats if there are
         # any None/np.nan values in the column
         # that's because None/np.nan cannot exist in an integer column
-        # but we write all integers as FLOATS in our BQ schema, so it's fine
+        # we should write all of our timestamps as FLOATS in our final schema
         df = pd.DataFrame.from_records(query_results, exclude=["attributes"])
 
         df.columns = [c.lower() for c in df.columns]
 
         # convert columns with datetime strings to datetimes
         # not all strings will be datetimes, so we ignore any errors that occur
-        if coerce_to_timestamp:
-            possible_timestamp_cols = df.columns[df.dtypes == "object"]
+        # we get the object's definition at this point and only consider
+        # features that are DATE or DATETIME
+        if coerce_to_timestamp and df.shape[0] > 0:
+            # get the object name out of the query results
+            # it's stored in the "attributes" dictionary
+            # for each returned record
+            object_name = query_results[0]['attributes']['type']
+
+            logging.info("Coercing timestamps for: {0}".format(object_name))
+
+            schema = self.describe_object(object_name)
+
+            # possible columns that can be convereted to timestamps
+            # are the ones that are either date or datetime types
+            # strings are too general and we risk unintentional conversion
+            possible_timestamp_cols = [
+                i['name'].lower()
+                for i in schema['fields']
+                if i['type'] in ["date", "datetime"] and
+                i['name'].lower() in df.columns
+            ]
             df[possible_timestamp_cols] = df[possible_timestamp_cols].apply(
-                lambda x: self._toTimestamp(x)
+                lambda x: self._to_timestamp(x)
             )
 
         if record_time_added:
