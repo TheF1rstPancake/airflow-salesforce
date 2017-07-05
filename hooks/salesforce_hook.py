@@ -54,7 +54,10 @@ class SalesforceHook(BaseHook):
             JSON structure in the `Extras` field.
             We need a user's security token to connect to Salesforce.
             So we define it in the `Extras` field as:
-                `{"security_token":"YOUR_SECRUITY_TOKEN"}`
+                `{"security_token":"YOUR_SECRUITY_TOKEN"}'
+            The Salesforce version can also be added as an optional parameter.
+            This is also defined in the 'Extras' field as:
+                `{"version":"YOUR_SALESFORCE_VERSION"}'
         """
         self.conn_id = conn_id
         self._args = args
@@ -78,6 +81,7 @@ class SalesforceHook(BaseHook):
             username=self.connection.login,
             password=self.connection.password,
             security_token=self.extras['security_token'],
+            version=self.extras.get('version', None),
             instance_url=self.connection.host
         )
         self.sf = sf
